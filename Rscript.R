@@ -3341,6 +3341,7 @@ cd8_fgsea <- run_fgsea_subclusters(cl13_cd8)
 c5mono_fgsea <- run_fgsea_subclusters(c5_mono)
 c5mac_fgsea <- run_fgsea_subclusters(c5_mac)
 
+cd8_fgsea
 
 if (!requireNamespace("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
@@ -3420,7 +3421,6 @@ table(Idents(c5_mac))
 
 # Run marker detection
 markers_cl <- FindMarkers(c5_mac, ident.1 = 0, ident.2 = 1)
-
 
 
 
@@ -3643,208 +3643,6 @@ pheatmap(c5mac_NES, scale = "row",
 
 
 
-
-
-library(Seurat)
-library(fgsea)
-library(dplyr)
-library(pheatmap)
-
-# Load pathways
-pathways <- gmtPathways("all_gene_lists.gmt")
-c5mac_fgsea <- prep_and_run_fgsea(c5_mac, resolution = 0.5)
-
-# Wrapper: prepare Seurat object and run fgsea per subcluster
-prep_and_run_fgsea <- function(obj, resolution = 0.5) {
-  # Extract raw counts from Assay5
-  raw_counts <- LayerData(obj[["RNA"]], layer = "counts")
-  
-  # Force unique gene names
-  rownames(raw_counts) <- make.unique(rownames(raw_counts))
-  
-  # Rebuild Seurat object with metadata
-  obj <- CreateSeuratObject(counts = raw_counts, meta.data = obj@meta.data)
-  
-  # Standard workflow
-  obj <- NormalizeData(obj)
-  obj <- FindVariableFeatures(obj)
-  obj <- ScaleData(obj)
-  obj <- RunPCA(obj, npcs = 30)
-  obj <- FindNeighbors(obj, dims = 1:20)
-  obj <- FindClusters(obj, resolution = resolution)
-  obj <- RunUMAP(obj, dims = 1:20)
-  
-  # Run fgsea per subcluster
-  subcluster_fgsea <- list()
-  for (cl in levels(Idents(obj))) {
-    markers_cl <- FindMarkers(obj, ident.1 = cl, min.pct = 0.1)
-    gene_stats <- markers_cl$avg_log2FC
-    names(gene_stats) <- rownames(markers_cl)
-    gene_stats <- tapply(gene_stats, names(gene_stats), max)
-    ranks <- sort(gene_stats, decreasing = TRUE)
-    fgseaRes_cl <- fgseaMultilevel(pathways = pathways, stats = ranks)
-    subcluster_fgsea[[cl]] <- fgseaRes_cl
-  }
-  return(list(seurat_obj = obj, fgsea_res = subcluster_fgsea))
-}
-
-# Example: run on your macrophage object
-c5mac_results <- prep_and_run_fgsea(c5_mac, resolution = 0.5)
-c5mac_obj <- c5mac_results$seurat_obj
-
-# Collect all fgsea results
-all_c5mac <- do.call(rbind, c5mac_results$fgsea_res)
-
-plot_top_genes_per_pathway(c5mac_obj, all_c5mac, "Macrophage")
-
-
-# Select top 20 pathways by adjusted p-value
-top_pathways_c5mac <- all_c5mac %>%
-  arrange(padj) %>%
-  head(20) %>%
-  pull(pathway)
-
-# Build NES matrix
-c5mac_NES_list <- lapply(c5mac_fgsea, function(res) {
-  nes <- setNames(res$NES, res$pathway)
-  nes[top_pathways_c5mac]
-})
-
-c5mac_NES <- do.call(cbind, c5mac_NES_list)
-rownames(c5mac_NES) <- top_pathways_c5mac
-colnames(c5mac_NES) <- names(c5mac_fgsea)
-
-# Replace NA with 0
-c5mac_NES[is.na(c5mac_NES)] <- 0
-
-# Plot heatmap
-pheatmap(c5mac_NES, scale = "row",
-         show_rownames = TRUE, show_colnames = TRUE,
-         main = "C5 macrophages Subcluster Top 20 Pathways")
-
-
-
-
-
-# Strip version suffix from Seurat rownames
-genes_clean_all <- sub("\\..*", "", rownames(c5mac_obj))
-
-# Get valid Ensembl IDs
-valid_keys <- keys(org.Hs.eg.db, keytype = "ENSEMBL")
-
-# Map all Seurat genes to symbols
-gene_map_all <- AnnotationDbi::select(org.Hs.eg.db,
-                                      keys = intersect(genes_clean_all, valid_keys),
-                                      keytype = "ENSEMBL",
-                                      columns = "SYMBOL")
-gene_map_all <- gene_map_all[!duplicated(gene_map_all$ENSEMBL), ]
-
-# Collect pathway genes
-genes_selected <- unique(unlist(pathways[selected_pathways]))
-genes_selected_clean <- sub("\\..*", "", genes_selected)
-
-# Which pathway genes are present in Seurat?
-genes_overlap <- intersect(genes_selected_clean, genes_clean_all)
-
-cat("Number of selected pathway genes found in Seurat object:", length(genes_overlap), "\n")
-print(genes_overlap)
-
-library(Seurat)
-library(fgsea)
-library(dplyr)
-library(pheatmap)
-
-# Load pathways
-pathways <- gmtPathways("all_gene_lists.gmt")
-
-# Pathways of interest
-selected_pathways <- c(
-  "complement activation",
-  "Antibody-dependent cellular cytotoxicity",
-  "Interleukin-2 family signaling",
-  "Leukocyte proliferation",
-  "Leukocyte homeostasis",
-  "Antigen processing and presentation",
-  "Negative regulation of antigen processing and presentation"
-)
-
-# Collect genes from selected pathways (symbols)
-genes_selected <- unique(unlist(pathways[selected_pathways]))
-
-# Keep only genes present in Seurat object (symbols)
-genes_present <- intersect(genes_selected, rownames(c5mac_obj))
-
-# Fetch expression matrix (normalized values)
-expr_mat <- GetAssayData(c5mac_obj, assay = "RNA", layer = "data")[genes_present, , drop = FALSE]
-
-# Average expression per cluster
-avg_expr <- AverageExpression(c5mac_obj, features = rownames(expr_mat),
-                              assays = "RNA", slot = "data")$RNA
-
-# Clean matrix: remove rows with all zeros/NA
-avg_expr <- avg_expr[rowSums(avg_expr, na.rm = TRUE) > 0, , drop = FALSE]
-
-# Build pathway annotation for rows
-pathway_annotation <- data.frame(
-  Pathway = rep(NA, nrow(avg_expr)),
-  row.names = rownames(avg_expr)
-)
-
-for (pw in selected_pathways) {
-  genes_pw <- pathways[[pw]]
-  pathway_annotation$Pathway[rownames(avg_expr) %in% genes_pw] <- pw
-}
-
-## Compute variance across clusters
-gene_var <- apply(avg_expr, 1, var)
-
-# Select top 30 most variable genes
-top_genes <- names(sort(gene_var, decreasing = TRUE))[1:30]
-
-# Subset matrix
-avg_expr_top <- avg_expr[top_genes, , drop = FALSE]
-
-# Plot heatmap
-pheatmap::pheatmap(
-  avg_expr_top,
-  cluster_rows = TRUE,
-  cluster_cols = TRUE,
-  scale = "row",
-  show_rownames = TRUE,
-  show_colnames = TRUE,
-  annotation_row = pathway_annotation[top_genes, , drop = FALSE],
-  main = "Top 30 Pathway Genes in C5 Macrophages",
-  fontsize_row = 8,
-  fontsize_col = 10,
-  angle_col = 45,
-  width = 10, height = 12
-)
-
-
-
-# Define complement activation gene set
-complement_genes <- c("C1QA","C1QB","C1QC","C2","C3","C4A","C4B",
-                      "CFB","CFD","CFH","CFI","CR1","CR2","ITGAM","ITGAX")
-
-# Keep only those present in Seurat
-complement_present <- intersect(complement_genes, rownames(c5mac_obj))
-
-# Expression matrix
-expr_mat_complement <- GetAssayData(c5mac_obj, assay = "RNA", layer = "data")[complement_present, ]
-
-# Average expression per cluster
-# Average expression per cluster
-avg_expr_complement <- AverageExpression(c5mac_obj,
-                                         features = complement_present,
-                                         assays = "RNA",
-                                         slot = "data")$RNA
-
-# Remove rows with all zeros or NA
-avg_expr_complement <- avg_expr_complement[rowSums(avg_expr_complement, na.rm = TRUE) > 0, , drop = FALSE]
-
-# Plot heatmap only if non-empty
-if (nrow(avg_expr_complement) > 0) {
-  pheatmap::pheatmap(
     avg_expr_complement,
     cluster_rows = TRUE,
     cluster_cols = TRUE,
@@ -4068,12 +3866,10 @@ pathways_cd4 <- c("Alpha beta T cell activation",
                   "Interleukin-4 and Interleukin-13 signaling",
                   "Interleukin-2 family signaling")
 
-pathways_cd8 <- c("Alpha-beta T cell activation",
-                  "Leukocyte mediated cytotoxicity",
-                  "Antigen receptor-mediated signaling pathway",
-                  "Gamma-delta T cell activation",
+pathways_cd8 <- c("Gamma-delta T cell activation",
                   "TCR signaling",
-                  "T cell proliferation")
+                  "T cell proliferation", 
+                  "Costimulation by the CD28 family")
 
 pathways_nk <- c("Complement activation",
                  "Leukocyte migration involved in inflammatory response",
@@ -4086,6 +3882,20 @@ pathways_mono <- c("MHC class II antigen presentation",
                    "Activation of innate immune response",
                    "Interferon gamma signaling",
                    "Costimulation by the CD28 family")
+                   
+                   
+library(dplyr)
+
+unique(cd8_fgsea_res$pathway)[1:20]   # show first 20 names
+grep("Immunoregulatory", cd8_fgsea_res$pathway, value = TRUE)
+
+grep("Gamma-delta", cd8_fgsea_res$pathway, value = TRUE)
+
+
+
+
+
+
 library(Seurat)
 library(pheatmap)
 library(gridExtra)
@@ -4498,6 +4308,9 @@ library(infercnv)
 
 library(org.Hs.eg.db)
 library(AnnotationDbi)
+library(Matrix)
+library(Seurat)
+counts_mfs1 <- GetAssayData(mfs1_clean, assay = "RNA", layer = "counts")
 
 # Combine all gene symbols from both Seurat objects
 all_genes <- unique(c(rownames(mfs1_clean), rownames(mfs2_clean)))
@@ -4523,3 +4336,998 @@ gene_pos_final <- gene_pos_all[, c("SYMBOL","CHR","CHRLOC","CHRLOCEND")]
 
 # Save to file
 write.table(gene_pos_final, "gene_pos_combined.txt", sep="\t", quote=FALSE, row.names=FALSE)
+
+
+colnames(gene_pos_combined)
+gene_pos_combined <- read.table("gene_pos_combined.txt", header=TRUE)
+
+colnames(gene_pos_combined) <- c("hgnc_symbol","chromosome_name","start_position","end_position")
+
+# Now check overlap
+sum(rownames(counts_mfs1) %in% gene_pos_combined$hgnc_symbol)
+sum(rownames(counts_mfs2) %in% gene_pos_combined$hgnc_symbol)
+
+head(gene_pos_combined$hgnc_symbol, 20)
+head(rownames(counts_mfs1), 20)
+
+head(rownames(counts_mfs2), 20)
+library(org.Hs.eg.db)
+
+ids2 <- AnnotationDbi::select(org.Hs.eg.db,
+                              keys = rownames(counts_mfs2),
+                              columns = "SYMBOL",
+                              keytype = "ENSEMBL")
+
+# Replace rownames with gene symbols
+rownames(counts_mfs2) <- ids2$SYMBOL[match(rownames(counts_mfs2), ids2$ENSEMBL)]
+
+gene_pos_combined <- read.table("gene_pos_combined.txt", header=TRUE)
+sum(rownames(counts_mfs1) %in% gene_pos_combined$hgnc_symbol)
+sum(rownames(counts_mfs2) %in% gene_pos_combined$hgnc_symbol)
+
+annots1 <- data.frame(
+  Cell = colnames(counts_mfs1),
+  Cluster = mfs1_clean$SingleR.labels,
+  stringsAsFactors = FALSE
+)
+
+# Strip whitespace just in case
+annots1$Cell <- trimws(annots1$Cell)
+
+write.table(annots1,
+            file = "mfs1_annotations.txt",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE)
+
+read.delim("mfs1_annotations.txt", nrows = 5)
+identical(read.delim("mfs1_annotations.txt")$Cell, colnames(counts_mfs1))
+
+length(colnames(counts_mfs1))
+nrow(annots1)
+test_annots <- read.delim("mfs1_annotations.txt", header=TRUE, sep="\t")
+head(test_annots)
+identical(test_annots$Cell, colnames(counts_mfs1))
+
+write.table(annots1,
+            file = "mfs1_annotations.txt",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            fileEncoding = "UTF-8")
+
+# Force clean ASCII, Unix line endings, no row names
+write.table(annots1,
+            file = "mfs1_annotations.txt",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            fileEncoding = "ASCII",
+            eol = "\n")
+
+readLines("mfs1_annotations.txt", 3)
+all(colnames(counts_mfs1) %in% annots1$Cell)
+
+
+test_annots <- read.delim("mfs1_annotations.txt", header=TRUE, sep="\t")
+identical(test_annots$Cell, colnames(counts_mfs1))
+
+anyDuplicated(annots1$Cell)
+class(counts_mfs1)
+
+unique(annots1$Cluster)
+setdiff(c("CD4+ T-cells","CD8+ T-cells","B-cells","NK cells","Monocytes","Macrophages","DC"),
+        unique(annots1$Cluster))
+
+table(annots1$Cluster)
+
+
+
+gene_pos_combined <- read.table("gene_pos_combined.txt", header=TRUE)
+
+# Rename columns correctly
+colnames(gene_pos_combined) <- c("hgnc_symbol","chromosome_name","start_position","end_position")
+
+# Force numeric conversion
+gene_pos_combined$start_position <- as.numeric(gene_pos_combined$start_position)
+gene_pos_combined$end_position   <- as.numeric(gene_pos_combined$end_position)
+
+# Write back clean file
+write.table(gene_pos_combined,
+            file = "gene_pos_combined.txt",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE)
+
+# Remove rows with NA in start or end position
+gene_pos_combined_clean <- gene_pos_combined[!is.na(gene_pos_combined$start_position) &
+                                               !is.na(gene_pos_combined$end_position), ]
+
+# Double-check structure
+str(gene_pos_combined_clean)
+
+# Write back clean file
+write.table(gene_pos_combined_clean,
+            file = "gene_pos_combined.txt",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE)
+sum(is.na(gene_pos_combined_clean$start_position))
+sum(is.na(gene_pos_combined_clean$end_position))
+
+str(gene_pos_combined)
+
+# Clean chromosome names
+gene_pos_combined_clean$chromosome_name <- gsub("^chr", "", gene_pos_combined_clean$chromosome_name)
+
+# Keep only standard chromosomes
+valid_chroms <- c(as.character(1:22), "X", "Y", "MT")
+gene_pos_combined_clean <- gene_pos_combined_clean[gene_pos_combined_clean$chromosome_name %in% valid_chroms, ]
+
+# Write back clean file
+write.table(gene_pos_combined_clean,
+            file = "gene_pos_combined.txt",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE)
+
+unique(gene_pos_combined_clean$chromosome_name)
+
+# Convert chromosome_name to factor with correct ordering
+valid_chroms <- c(as.character(1:22), "X", "Y", "MT")
+gene_pos_combined_clean$chromosome_name <- factor(
+  gene_pos_combined_clean$chromosome_name,
+  levels = valid_chroms,
+  ordered = TRUE
+)
+
+# Write back clean file
+write.table(gene_pos_combined_clean,
+            file = "gene_pos_combined.txt",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE)
+
+
+gene_pos_combined_clean$chromosome_name <- as.character(gene_pos_combined_clean$chromosome_name)
+
+# Map chromosomes to numeric values, keep X/Y/MT as strings
+gene_pos_combined_clean$chromosome_name[gene_pos_combined_clean$chromosome_name == "X"] <- "23"
+gene_pos_combined_clean$chromosome_name[gene_pos_combined_clean$chromosome_name == "Y"] <- "24"
+gene_pos_combined_clean$chromosome_name[gene_pos_combined_clean$chromosome_name == "MT"] <- "25"
+
+# Convert to numeric
+gene_pos_combined_clean$chromosome_name <- as.numeric(gene_pos_combined_clean$chromosome_name)
+
+# Write back clean file
+write.table(gene_pos_combined_clean,
+            file = "gene_pos_combined.txt",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE)
+
+str(gene_pos_combined_clean)
+unique(gene_pos_combined_clean$chromosome_name)
+
+is.numeric(gene_pos_combined_clean$chromosome_name)
+any(is.na(gene_pos_combined_clean$chromosome_name))
+
+length(rownames(counts_mfs1))
+sum(rownames(counts_mfs1) %in% gene_pos_combined_clean$hgnc_symbol)
+setdiff(head(rownames(counts_mfs1), 20), gene_pos_combined_clean$hgnc_symbol)
+
+library(biomaRt)
+
+library(biomaRt)
+
+library(AnnotationHub)
+
+
+# Option 2: Ensembl EnsDb (release 86)
+BiocManager::install("EnsDb.Hsapiens.v86")
+library(EnsDb.Hsapiens.v86)
+gene_ranges <- genes(EnsDb.Hsapiens.v86)
+head(gene_ranges)
+
+library(EnsDb.Hsapiens.v86)
+
+gene_ranges <- genes(EnsDb.Hsapiens.v86)
+gene_pos <- as.data.frame(gene_ranges)[, c("symbol","seqnames","start","end")]
+colnames(gene_pos) <- c("hgnc_symbol","chromosome_name","start_position","end_position")
+
+gene_pos$chromosome_name <- gsub("^chr", "", gene_pos$chromosome_name)
+gene_pos$chromosome_name[gene_pos$chromosome_name == "X"] <- "23"
+gene_pos$chromosome_name[gene_pos$chromosome_name == "Y"] <- "24"
+gene_pos$chromosome_name[gene_pos$chromosome_name == "MT"] <- "25"
+gene_pos$chromosome_name <- as.numeric(gene_pos$chromosome_name)
+
+gene_pos <- gene_pos[gene_pos$hgnc_symbol %in% rownames(counts_mfs1), ]
+# Remove duplicated gene symbols
+gene_pos <- gene_pos[!duplicated(gene_pos$hgnc_symbol), ]
+
+gene_pos$start_position <- as.numeric(gene_pos$start_position)
+gene_pos$end_position   <- as.numeric(gene_pos$end_position)
+gene_pos <- gene_pos[!is.na(gene_pos$chromosome_name) &
+                       !is.na(gene_pos$start_position) &
+                       !is.na(gene_pos$end_position), ]
+gene_pos <- gene_pos[gene_pos$hgnc_symbol %in% rownames(counts_mfs1), ]
+gene_pos <- gene_pos[!duplicated(gene_pos$hgnc_symbol), ]
+write.table(gene_pos, "gene_pos_mfs1.txt",
+            sep="\t", quote=FALSE, row.names=FALSE)
+sum(rownames(counts_mfs1) %in% gene_pos$hgnc_symbol)
+anyDuplicated(gene_pos$hgnc_symbol)
+str(gene_pos)
+matched_genes <- intersect(rownames(counts_mfs1), gene_pos$hgnc_symbol)
+counts_mfs1 <- counts_mfs1[matched_genes, ]
+gene_pos <- gene_pos[gene_pos$hgnc_symbol %in% matched_genes, ]
+
+
+# Sort gene order file by chromosome and start
+gene_pos <- gene_pos[order(gene_pos$chromosome_name, gene_pos$start_position), ]
+
+# Reorder counts matrix to match gene order
+counts_mfs1 <- counts_mfs1[gene_pos$hgnc_symbol, ]
+
+# Save gene order file again
+write.table(gene_pos, "gene_pos_mfs1.txt",
+            sep="\t", quote=FALSE, row.names=FALSE)
+
+anyDuplicated(gene_pos$hgnc_symbol)
+
+
+library(org.Hs.eg.db)
+mapped <- AnnotationDbi::select(org.Hs.eg.db,
+                                keys = rownames(counts_mfs1),
+                                columns = "ENSEMBL",
+                                keytype = "SYMBOL")
+head(rownames(counts_mfs1))
+
+str(gene_pos)
+
+sum(rownames(counts_mfs1) %in% gene_pos$hgnc_symbol)
+
+sum(rownames(counts_mfs1) %in% gene_pos$hgnc_symbol)
+
+annots1 <- data.frame(
+  colnames(counts_mfs1),
+  mfs1_clean$SingleR.labels
+)
+
+counts_mfs1 <- as.matrix(counts_mfs1)
+storage.mode(counts_mfs1) <- "numeric"
+str(counts_mfs1[1:5, 1:5])
+
+write.table(annots1,
+            "mfs1_annotations.txt",
+            sep="\t",
+            quote=FALSE,
+            row.names=FALSE,
+            col.names=FALSE)
+readLines("mfs1_annotations.txt", n=5)
+
+
+# Ensure perfect alignment
+matched_genes <- intersect(rownames(counts_mfs1), gene_pos$hgnc_symbol)
+counts_mfs1 <- counts_mfs1[matched_genes, ]
+gene_pos <- gene_pos[match(matched_genes, gene_pos$hgnc_symbol), ]
+
+# Check alignment
+stopifnot(all(rownames(counts_mfs1) == gene_pos$hgnc_symbol))
+
+# Save gene order file
+write.table(gene_pos, "gene_pos_mfs1.txt",
+            sep="\t", quote=FALSE, row.names=FALSE)
+readLines("mfs1_annotations.txt", n=5)
+unique(annots1$Cluster)
+
+cluster_vector <- mfs1_clean$SingleR.labels
+
+annots1 <- data.frame(
+  Cell = colnames(counts_mfs1),
+  Cluster = cluster_vector,   # replace with your cluster assignments
+  stringsAsFactors = FALSE
+)
+
+# Save with tab delimiter, no header
+write.table(annots1,
+            "mfs1_annotations.txt",
+            sep="\t", quote=FALSE,
+            row.names=FALSE,
+            col.names=FALSE,
+            fileEncoding="UTF-8")
+annots_check <- read.table("mfs1_annotations.txt", sep="\t", header=FALSE)
+str(annots_check)
+head(annots_check)
+unique(annots_check$V2)
+setdiff(c("CD4+ T-cells","CD8+ T-cells","B-cells","NK cells","Monocytes","Macrophages","DC"),
+        unique(annots_check$V2))
+gene_pos$chromosome_name <- paste0("chr", gene_pos$chromosome_name)
+
+write.table(gene_pos, "gene_pos_mfs1.txt",
+            sep="\t", quote=FALSE, row.names=FALSE)
+
+# Convert numeric chromosome names to "chrX" format
+gene_pos$chromosome_name <- paste0("chr", gene_pos$chromosome_name)
+
+# Save again
+write.table(gene_pos, "gene_pos_mfs1.txt",
+            sep="\t", quote=FALSE, row.names=FALSE)
+
+
+head(readLines("mfs1_annotations.txt", n=5))
+unique(annots1$Cluster)
+str(gene_pos)
+# Keep only standard human chromosomes
+# Define standard human chromosomes
+standard_chrs <- paste0("chr", c(1:22, "X", "Y"))
+
+# Keep only those
+gene_pos <- gene_pos[gene_pos$chromosome_name %in% standard_chrs, ]
+
+# Save again
+write.table(gene_pos, "gene_pos_mfs1.txt",
+            sep="\t", quote=FALSE, row.names=FALSE)
+
+unique(gene_pos$chromosome_name)
+# Should show chr1–chr22, chrX, chrY only
+
+# Reorder columns to match InferCNV expectation
+gene_pos_clean <- gene_pos[, c("hgnc_symbol", "chromosome_name", "start_position", "end_position")]
+
+# Save with tab delimiter, no header
+write.table(gene_pos_clean, "gene_pos_mfs1.txt",
+            sep="\t", quote=FALSE, row.names=FALSE, col.names=FALSE)
+
+
+# Check for duplicates
+sum(duplicated(gene_pos$hgnc_symbol))
+
+# Check for NA values
+colSums(is.na(gene_pos))
+
+# Check chromosome names
+unique(gene_pos$chromosome_name)
+
+library(infercnv)
+counts_mfs1 <- counts_mfs1[rowSums(counts_mfs1) > 10, ]
+
+# Retry InferCNV
+infercnv_obj1 <- CreateInfercnvObject(
+  raw_counts_matrix = counts_mfs1,
+  annotations_file = "mfs1_annotations.txt",
+  gene_order_file = "gene_pos_mfs1.txt",
+  ref_group_names = c("CD4+ T-cells","CD8+ T-cells","B-cells","NK cells","Monocytes","Macrophages","DC")
+)
+
+infercnv_obj1 <- infercnv::run(
+  infercnv_obj1,
+  cutoff = 0.1,
+  out_dir = "infercnv_output_mfs1",
+  cluster_by_groups = TRUE,
+  denoise = TRUE,
+  HMM = FALSE
+)
+# If it's an RDS file
+tumor_subclusters <- readRDS("infercnv_output_mfs1/15_tumor_subclusters.leiden.infercnv_obj")
+class(tumor_subclusters)
+str(tumor_subclusters)
+
+# See what slots are available
+slotNames(tumor_subclusters)
+
+# Look at the structure
+str(tumor_subclusters, max.level = 1)
+
+# Access the tumor_subclusters slot
+clusters <- tumor_subclusters@tumor_subclusters
+
+# Example: get all Fibroblast subclusters
+fibro_clusters <- clusters$Fibroblasts
+fibro_cells <- unlist(fibro_clusters)
+fibro_ids <- names(fibro_cells)   # cell barcodes
+
+all_clusters <- tumor_subclusters@tumor_subclusters
+tumor_cells <- unlist(all_clusters)
+tumor_ids <- names(tumor_cells)
+
+flatten_clusters <- function(obj) {
+  res <- list()
+  for (group in names(obj)) {
+    sublist <- obj[[group]]
+    if (is.list(sublist)) {
+      for (sub in names(sublist)) {
+        vec <- sublist[[sub]]
+        # Case 1: vec is a named integer vector
+        if (is.integer(vec) && !is.null(names(vec))) {
+          ids <- names(vec)
+          res[[length(res) + 1]] <- data.frame(
+            cell_id   = ids,
+            group     = group,
+            subcluster= sub,
+            stringsAsFactors = FALSE
+          )
+        }
+        # Case 2: vec is itself a list of named integer vectors
+        if (is.list(vec)) {
+          for (sub2 in names(vec)) {
+            vec2 <- vec[[sub2]]
+            if (is.integer(vec2) && !is.null(names(vec2))) {
+              ids <- names(vec2)
+              res[[length(res) + 1]] <- data.frame(
+                cell_id   = ids,
+                group     = group,
+                subcluster= sub2,
+                stringsAsFactors = FALSE
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+  if (length(res) > 0) {
+    do.call(rbind, res)
+  } else {
+    NULL
+  }
+}
+
+# Apply to the slot
+tumor_df <- flatten_clusters(tumor_subclusters@tumor_subclusters)
+head(tumor_df)
+
+# CNV scores per cell
+cnv_matrix <- tumor_subclusters@expr.data
+cnv_scores <- colMeans(cnv_matrix, na.rm = TRUE)
+
+# Align to Seurat cells
+mfs1_clean$CNV_score <- cnv_scores[colnames(mfs1_clean)]
+
+# Check cluster metadata
+head(mfs1_clean$seurat_clusters)
+boxplot(CNV_score ~ seurat_clusters, data = mfs1_clean@meta.data,
+        xlab = "Cluster", ylab = "CNV score",
+        main = "CNV score distribution across Seurat clusters")
+
+library(ggplot2)
+library(ggpubr)
+
+df <- mfs1_clean@meta.data
+df$seurat_clusters <- factor(df$seurat_clusters)
+
+# Define some comparisons you want to highlight
+comparisons <- list(c("1","2"), c("7","6"), c("5","2"), c("0","5"),c("13","5"))
+
+ggplot(df, aes(x = seurat_clusters, y = CNV_score, fill = seurat_clusters)) +
+  geom_boxplot(outlier.size = 0.5) +
+  theme_classic() +
+  labs(x = "Cluster", y = "CNV score",
+       title = "CNV score distribution across Seurat clusters") +
+  # Global Kruskal-Wallis test annotation
+  stat_compare_means(method = "kruskal.test", label.y = max(df$CNV_score)*1.05) +
+  # Pairwise Wilcoxon tests with significance stars
+  stat_compare_means(method = "wilcox.test", comparisons = comparisons,
+                     label = "p.signif", p.adjust.method = "bonferroni")
+# Zoom out y-axis range
+coord_cartesian(ylim = c(0.99, 1.01)) +
+  # Add a vivid color palette
+  scale_fill_brewer(palette = "Set2")
+
+
+library(Seurat)
+library(ggplot2)
+
+# Representative DE genes per fibroblast-like clusters
+genes_to_plot <- c("DCN",     # C0
+                   "IFIT3",   # C1
+                   "PDGFRA",  # C2
+                   "COL5A3",  # C3
+                   "TIMP1",   # C4
+                   "ISG15",   # C6
+                   "IFIT1",   # C7
+                   "RUNX2",   # C8
+                   "MKI67",   # C9
+                   "FGF7")    # C11
+
+# Set cluster identities
+Idents(mfs1_clean) <- "seurat_clusters"
+
+# Define fibroblast vs reference clusters
+fibro_clusters <- c("0","1","2","3","4","6","7","8","9","11")
+ref_clusters   <- c("5","13")
+clusters_to_show <- c(fibro_clusters, ref_clusters)
+
+# Loop through genes and plot violin plots
+for (gene in genes_to_plot) {
+  if (gene %in% rownames(mfs1_clean)) {
+    p <- VlnPlot(mfs1_clean,
+                 features = gene,
+                 group.by = "seurat_clusters",
+                 pt.size = 0) +
+      ggtitle(paste("Expression of", gene, "Fibroblast vs Reference")) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      scale_x_discrete(limits = clusters_to_show)
+    print(p)
+  } else {
+    message(paste("Gene", gene, "not found in Seurat object"))
+  }
+}
+
+# Look for exact matches
+"DCN" %in% rownames(mfs1_clean)
+"RUNX2" %in% rownames(mfs1_clean)
+
+# Search for partial matches (sometimes Ensembl IDs or aliases are stored)
+grep("DCN", rownames(mfs1_clean), value = TRUE)
+grep("RUNX2", rownames(mfs1_clean), value = TRUE)
+
+summary(mfs1_clean[["RNA"]]@data["DCN", ])
+summary(mfs1_clean[["RNA"]]@data["RUNX2", ])
+
+rna_data <- GetAssayData(mfs1_clean, assay = "RNA", layer = "data")
+
+genes_to_plot <- c("COL1A1","COL1A2","COL3A1","FN1","ACTA2","PDGFRA","MKI67","ISG15","IFIT3")
+
+for (gene in genes_to_plot) {
+  if (gene %in% rownames(rna_data) && sum(rna_data[gene, ]) > 0) {
+    p <- VlnPlot(mfs1_clean, features = gene, group.by = "seurat_clusters", pt.size = 0) +
+      ggtitle(paste("Expression of", gene, "across clusters")) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    print(p)
+  } else {
+    message(paste("Gene", gene, "not expressed in dataset"))
+  }
+}
+
+
+
+library(Seurat)
+library(ggplot2)
+
+# Genes that are expressed in your dataset
+genes_to_plot <- c("ACTA2","COL3A1","PDGFRA","IFIT3","FN1","COL1A1","COL1A2","SPARC","VCAN","FBN1",
+                   "CD68","CD14","CD3D","CD8A","NKG7")
+
+Idents(mfs1_clean) <- "seurat_clusters"
+
+for (gene in genes_to_plot) {
+  if (gene %in% rownames(mfs1_clean)) {
+    p <- VlnPlot(mfs1_clean, features = gene, group.by = "seurat_clusters", pt.size = 0) +
+      ggtitle(paste("Expression of", gene, "across clusters")) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    print(p)
+  } else {
+    message(paste("Gene", gene, "not found in dataset"))
+  }
+}
+
+
+
+# Run inferCNV for mfs2_clean
+infercnv_obj2 <- CreateInfercnvObject(
+  raw_counts_matrix = counts_mfs2,
+  annotations_file = "mfs2_annotations.txt",
+  gene_order_file = "gene_pos_combined.txt",
+  ref_group_names = c("T cells","B cells","NK cells","Monocytes","Macrophages","Dendritic cells")
+)
+
+infercnv_obj2 <- infercnv::run(
+  infercnv_obj2,
+  cutoff = 0.1,
+  out_dir = "infercnv_output_mfs2",
+  cluster_by_groups = TRUE,
+  denoise = TRUE,
+  HMM = TRUE
+)
+
+
+library(infercnv)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(Matrix)
+library(Seurat)
+library(EnsDb.Hsapiens.v86)
+
+# Extract raw counts from Seurat object
+counts_mfs2 <- GetAssayData(mfs2_clean, assay = "RNA", layer = "counts")
+
+
+# Map ENSEMBL IDs to gene symbols if needed
+ids2 <- AnnotationDbi::select(org.Hs.eg.db,
+                              keys = rownames(counts_mfs2),
+                              columns = "SYMBOL",
+                              keytype = "ENSEMBL")
+
+# Replace rownames with gene symbols
+rownames(counts_mfs2) <- ids2$SYMBOL[match(rownames(counts_mfs2), ids2$ENSEMBL)]
+
+# Build gene position file using EnsDb
+gene_ranges <- genes(EnsDb.Hsapiens.v86)
+gene_pos <- as.data.frame(gene_ranges)[, c("symbol","seqnames","start","end")]
+colnames(gene_pos) <- c("hgnc_symbol","chromosome_name","start_position","end_position")
+
+# Clean chromosome names
+gene_pos$chromosome_name <- gsub("^chr", "", gene_pos$chromosome_name)
+gene_pos$chromosome_name[gene_pos$chromosome_name == "X"] <- "23"
+gene_pos$chromosome_name[gene_pos$chromosome_name == "Y"] <- "24"
+gene_pos$chromosome_name[gene_pos$chromosome_name == "MT"] <- "25"
+gene_pos$chromosome_name <- as.numeric(gene_pos$chromosome_name)
+
+# Keep only genes present in counts
+gene_pos <- gene_pos[gene_pos$hgnc_symbol %in% rownames(counts_mfs2), ]
+gene_pos <- gene_pos[!duplicated(gene_pos$hgnc_symbol), ]
+
+# Remove NA values
+gene_pos <- gene_pos[!is.na(gene_pos$chromosome_name) &
+                       !is.na(gene_pos$start_position) &
+                       !is.na(gene_pos$end_position), ]
+
+# Sort by chromosome and start
+gene_pos <- gene_pos[order(gene_pos$chromosome_name, gene_pos$start_position), ]
+
+# Reorder counts matrix to match gene order
+matched_genes <- intersect(rownames(counts_mfs2), gene_pos$hgnc_symbol)
+counts_mfs2 <- counts_mfs2[matched_genes, ]
+gene_pos <- gene_pos[match(matched_genes, gene_pos$hgnc_symbol), ]
+
+# Save gene order file
+write.table(gene_pos, "gene_pos_mfs2.txt",
+            sep="\t", quote=FALSE, row.names=FALSE, col.names=FALSE)
+
+# Build annotation file
+annots2 <- data.frame(
+  Cell = colnames(counts_mfs2),
+  Cluster = mfs2_clean$SingleR.labels,
+  stringsAsFactors = FALSE
+)
+
+# Save annotation file
+write.table(annots2,
+            "mfs2_annotations.txt",
+            sep="\t", quote=FALSE,
+            row.names=FALSE,
+            col.names=FALSE)
+
+# Filter lowly expressed genes
+library(Matrix)
+counts_mfs2 <- counts_mfs2[rowSums(counts_mfs2) > 30, ]
+counts_mfs2 <- as(counts_mfs2, "dgCMatrix")   # sparse format
+
+# Create InferCNV object
+infercnv_obj2 <- CreateInfercnvObject(
+  raw_counts_matrix = counts_mfs2,
+  annotations_file = "mfs2_annotations.txt",
+  gene_order_file = "gene_pos_mfs2.txt",
+  ref_group_names = c("CD4+ T-cells","CD8+ T-cells","B-cells","NK cells","Monocytes","Macrophages","DC")
+)
+
+unlink("infercnv_output_mfs2", recursive = TRUE)
+
+# Run InferCNV
+infercnv_obj2 <- infercnv::run(
+  infercnv_obj2,
+  cutoff = 0.1,
+  out_dir = "infercnv_output_mfs2",
+  cluster_by_groups = TRUE,
+  denoise = TRUE,
+  HMM = FALSE
+)
+
+
+
+# Load InferCNV tumor subclusters object
+# Load InferCNV tumor subclusters object for mfs2
+tumor_subclusters2 <- readRDS("infercnv_output_mfs2/15_tumor_subclusters.leiden.infercnv_obj")
+class(tumor_subclusters2)
+str(tumor_subclusters2, max.level = 1)
+
+# See what slots are available
+slotNames(tumor_subclusters2)
+
+# Access the tumor_subclusters slot
+clusters2 <- tumor_subclusters2@tumor_subclusters
+
+# Example: get all Fibroblast subclusters
+fibro_clusters2 <- clusters2$Fibroblasts
+fibro_cells2 <- unlist(fibro_clusters2)
+fibro_ids2 <- names(fibro_cells2)   # cell barcodes
+
+all_clusters2 <- tumor_subclusters2@tumor_subclusters
+tumor_cells2 <- unlist(all_clusters2)
+tumor_ids2 <- names(tumor_cells2)
+
+# Flatten clusters into a dataframe
+flatten_clusters <- function(obj) {
+  res <- list()
+  for (group in names(obj)) {
+    sublist <- obj[[group]]
+    if (is.list(sublist)) {
+      for (sub in names(sublist)) {
+        vec <- sublist[[sub]]
+        if (is.integer(vec) && !is.null(names(vec))) {
+          ids <- names(vec)
+          res[[length(res) + 1]] <- data.frame(
+            cell_id   = ids,
+            group     = group,
+            subcluster= sub,
+            stringsAsFactors = FALSE
+          )
+        }
+        if (is.list(vec)) {
+          for (sub2 in names(vec)) {
+            vec2 <- vec[[sub2]]
+            if (is.integer(vec2) && !is.null(names(vec2))) {
+              ids <- names(vec2)
+              res[[length(res) + 1]] <- data.frame(
+                cell_id   = ids,
+                group     = group,
+                subcluster= sub2,
+                stringsAsFactors = FALSE
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+  if (length(res) > 0) do.call(rbind, res) else NULL
+}
+
+# Apply to the slot
+tumor_df2 <- flatten_clusters(tumor_subclusters2@tumor_subclusters)
+head(tumor_df2)
+
+# CNV scores per cell
+cnv_matrix2 <- tumor_subclusters2@expr.data
+cnv_scores2 <- colMeans(cnv_matrix2, na.rm = TRUE)
+
+  # Align to Seurat cells
+  mfs2_clean$CNV_score <- cnv_scores2[colnames(mfs2_clean)]
+  
+  # Quick boxplot
+  boxplot(CNV_score ~ seurat_clusters, data = mfs2_clean@meta.data,
+          xlab = "Cluster", ylab = "CNV score",
+          main = "CNV score distribution across Seurat clusters (mfs2_clean)")
+  library(ggplot2)
+  library(ggpubr)
+  
+  df2 <- mfs2_clean@meta.data
+  df2$seurat_clusters <- factor(df2$seurat_clusters)
+  
+  # Define comparisons of interest
+  comparisons2 <- list(c("5","2"), c("5","10"), c("5","8"))
+  
+  ggplot(df2, aes(x = seurat_clusters, y = CNV_score, fill = seurat_clusters)) +
+    geom_boxplot(outlier.size = 0.5) +
+    theme_classic() +
+    labs(x = "Cluster", 
+         y = "CNV score (zoomed to 0.99–1.01)", 
+         title = "CNV score distribution across Seurat clusters (mfs2_clean)") +
+    # Global Kruskal-Wallis test annotation
+    stat_compare_means(method = "kruskal.test", 
+                       label.y = 1.0095) +   # place annotation near top of new range
+    # Pairwise Wilcoxon tests with significance stars
+    stat_compare_means(method = "wilcox.test", comparisons = comparisons2,
+                       label = "p.signif", p.adjust.method = "bonferroni",
+                       label.y = c(1.009, 1.0085, 1.008, 1.0075, 1.007)) + 
+    # Zoom out y-axis range
+    coord_cartesian(ylim = c(0.99, 1.01)) +
+    # Add a vivid color palette
+    scale_fill_brewer(palette = "Set2")
+  
+  library(Seurat)
+  library(ggplot2)
+str(mfs2_clean)
+levels(Idents(mfs2_clean))
+length(levels(Idents(mfs2_clean)))
+# Access UMAP embeddings
+head(Embeddings(mfs2_clean, "umap"))
+
+# Get cluster assignment per cell
+head(mfs2_clean$seurat_clusters)
+
+DimPlot(mfs2_clean, reduction = "umap", group.by = "seurat_clusters", label = TRUE, repel = TRUE) +
+  ggtitle("UMAP of mfs2_clean (12 clusters)")
+
+DimPlot(mfs1_clean, reduction = "umap", group.by = "seurat_clusters", label = TRUE, repel = TRUE) +
+  ggtitle("UMAP of mfs1_clean (17 clusters)")
+
+head(mfs2_clean@meta.data)
+
+mfs1_clean$ClusterCellType <- cluster_map1[as.character(mfs1_clean$seurat_clusters)]
+
+DimPlot(mfs1_clean, reduction = "umap", group.by = "ClusterCellType",
+        label = TRUE, repel = TRUE) +
+  ggtitle("UMAP of mfs1_clean (17 clusters, annotated)")
+
+
+
+library(dplyr)
+mfs2_clean <- AddMetaData(
+  mfs2_clean,
+  metadata = cluster_map2_vec[as.character(mfs2_clean$seurat_clusters)],
+  col.name = "ClusterCellType"
+)
+
+
+library(biomaRt)
+
+# Suppose your Seurat object has Ensembl IDs as rownames
+ensembl_ids <- rownames(mfs2_clean)
+
+# Map Ensembl → SYMBOL
+gene_map <- AnnotationDbi::select(org.Hs.eg.db,
+                                  keys = ensembl_ids,
+                                  columns = "SYMBOL",
+                                  keytype = "ENSEMBL")
+
+head(gene_map)
+
+# Remove NA symbols
+gene_map <- gene_map[!is.na(gene_map$SYMBOL), ]
+
+# Deduplicate: keep one symbol per Ensembl ID
+gene_map_unique <- gene_map[!duplicated(gene_map$ENSEMBL), ]
+
+# Create mapping vector
+symbol_map <- setNames(gene_map_unique$SYMBOL, gene_map_unique$ENSEMBL)
+
+# Replace rownames with SYMBOLs where available
+rownames(mfs2_clean) <- ifelse(rownames(mfs2_clean) %in% names(symbol_map),
+                               symbol_map[rownames(mfs2_clean)],
+                               rownames(mfs2_clean))
+
+VlnPlot(mfs2_clean, features = c("PDGFRB", "COL1A2", "PDGFRA", "NOTCH3", "FAP", "EGFR"),
+        group.by = "seurat_clusters",
+        pt.size = 0.1)
+
+
+library(Seurat)
+library(ggplot2)
+library(ggpubr)
+
+library(org.Hs.eg.db)
+# Define fibroblast clusters and immune reference clusters
+fibro_clusters <- c("7","9","10")
+immune_clusters <- c("0","1","2","4","5","6")
+
+# Representative fibroblast markers and oncogenes
+fibroblast_genes <- c("PDGFRB", "COL1A2", "PDGFRA")
+oncogenes <- c("NOTCH3", "FAP", "EGFR")
+
+# Combine into one list
+genes_to_plot <- c(fibroblast_genes, oncogenes)
+
+# Make sure genes exist in dataset
+genes_to_plot <- genes_to_plot[genes_to_plot %in% rownames(mfs2_clean)]
+
+# Violin plots
+VlnPlot(mfs2_clean, features = genes_to_plot,
+        group.by = "seurat_clusters",
+        pt.size = 0.1,
+        cols = c("grey70","grey80","grey90","grey60","grey50","grey40",
+                 "firebrick","darkorange","steelblue","forestgreen","purple","gold")) +
+  ggtitle("Fibroblast markers and oncogenes across clusters (mfs2_clean)")
+
+
+
+
+library(dplyr)
+
+# For mfs1_clean
+df1 <- data.frame(
+  Cluster   = mfs1_clean$seurat_clusters,
+  CellType  = mfs1_clean$SingleR.labels
+)
+
+summary1 <- df1 %>%
+  group_by(Cluster, CellType) %>%
+  summarise(Cells = n(), .groups = "drop") %>%
+  mutate(Percent = round(Cells / ncol(mfs1_clean) * 100, 2))
+
+summary1
+
+# For mfs2_clean
+df2 <- data.frame(
+  Cluster   = mfs2_clean$seurat_clusters,
+  CellType  = mfs2_clean$SingleR.labels
+)
+
+summary2 <- df2 %>%
+  group_by(Cluster, CellType) %>%
+  summarise(Cells = n(), .groups = "drop") %>%
+  mutate(Percent = round(Cells / ncol(mfs2_clean) * 100, 2))
+
+summary2
+
+
+library(dplyr)
+library(Seurat)
+
+
+library(ggplot2)
+
+
+summary1_df <- summary1 %>% ungroup() %>% as.data.frame()
+str(summary1_df)
+colnames(summary1_df)
+library(ggplot2)
+
+# Add a label column for plotting
+summary1_df$Label <- paste0(summary1_df$SingleR.labels,
+                            "\n", summary1_df$Cells,
+                            " (", summary1_df$Percent, "%)")
+
+library(ggplot2)
+
+ggplot(summary1_df, aes(x = reorder(SingleR.labels, -Cells), y = Cells, fill = SingleR.labels)) +
+  geom_bar(stat = "identity", color = "black") +
+  theme_minimal() +
+  ggtitle("mfs1_clean Cell Type Composition") +
+  xlab("Cell Type") +
+  ylab("Number of Cells") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +
+  geom_text(aes(label = paste0(Cells, " (", Percent, "%)")),
+            vjust = -0.3, size = 3)
+
+
+summary2_df <- summary2 %>% ungroup() %>% as.data.frame()
+str(summary2_df)
+colnames(summary2_df)
+
+library(dplyr)
+library(ggplot2)
+
+# Collapse across clusters: sum counts and recompute percentages
+summary2_total <- summary2_df %>%
+  group_by(CellType) %>%
+  summarise(Cells = sum(Cells), .groups = "drop") %>%
+  mutate(Percent = round(Cells / sum(Cells) * 100, 2))
+
+# Plot histogram
+ggplot(summary2_total, aes(x = reorder(CellType, -Cells), y = Cells, fill = CellType)) +
+  geom_col(color = "black") +
+  theme_minimal() +
+  ggtitle("mfs2_clean Cell Type Composition (Total)") +
+  xlab("Cell Type") +
+  ylab("Number of Cells") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +
+  geom_text(aes(label = paste0(Cells, " (", Percent, "%)")),
+            vjust = -0.3, size = 3)
+
+
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+
+# 1. Plot colored by SingleR cell type
+p <- DimPlot(mfs2_clean, group.by = "SingleR.labels", label = FALSE) +
+  theme(legend.position = "right")
+
+# 2. Extract UMAP coordinates and cluster IDs
+umap_data <- Embeddings(mfs2_clean, "umap")
+cluster_ids <- mfs2_clean$seurat_clusters
+
+# 3. Compute cluster centers
+centers <- aggregate(umap_data, by = list(cluster = cluster_ids), FUN = mean)
+colnames(centers)[2:3] <- c("UMAP_1", "UMAP_2")
+
+# 4. Overlay cluster numbers at centers
+p <- p + geom_text(data = centers,
+                   aes(x = UMAP_1, y = UMAP_2, label = cluster),
+                   size = 6, fontface = "bold", color = "black")
+
+# 5. Display
+p
+
