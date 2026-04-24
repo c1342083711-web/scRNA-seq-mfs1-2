@@ -4107,6 +4107,109 @@ plot_top20_pathways <- function(results, celltype_name, outdir = "D:/Rtmp_fgsea_
 res_c0_cd8 <- run_fgsea_subclusters(mfs2_c0_cd8, resolution = 0.6)
 plot_top20_pathways(res_c0_cd8, "c0_CD8")
 
+res_c2_nk <- run_fgsea_subclusters(mfs2_c2_nk, resolution = 1.0)
+plot_top20_pathways(res_c2_nk, "mfs2_c2_nk")
+
+
+res_c4_nk <- run_fgsea_subclusters(mfs2_c4_nk, resolution = 1.0)
+
+res_c4_cd8 <- run_fgsea_subclusters(mfs2_c4_cd8, resolution = 0.6)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+run_fgsea_subclusters <- function(obj, resolution = 0.5) {
+  raw_counts <- LayerData(obj[["RNA"]], layer = "counts")
+  rownames(raw_counts) <- make.unique(rownames(raw_counts))
+  
+  # Try mapping as Ensembl, fall back to SYMBOL
+  ensembl_ids <- rownames(raw_counts)
+  symbol_map <- tryCatch(
+    mapIds(org.Hs.eg.db,
+           keys = ensembl_ids,
+           column = "SYMBOL",
+           keytype = "ENSEMBL",
+           multiVals = "first"),
+    error = function(e) NULL
+  )
+  
+  if (is.null(symbol_map)) {
+    message("Row names are not Ensembl IDs, using them directly as gene symbols.")
+    gene_symbols <- ensembl_ids
+  } else {
+    gene_symbols <- ifelse(is.na(symbol_map), ensembl_ids, symbol_map)
+  }
+  
+  # Collapse duplicates
+  raw_counts <- rowsum(raw_counts, group = gene_symbols)
+  rownames(raw_counts) <- make.unique(rownames(raw_counts))
+  
+  # Rebuild Seurat object
+  obj <- CreateSeuratObject(counts = raw_counts, meta.data = obj@meta.data)
+  
+  # Standard workflow
+  obj <- NormalizeData(obj)
+  obj <- FindVariableFeatures(obj)
+  obj <- ScaleData(obj)
+  obj <- RunPCA(obj, npcs = 30)
+  obj <- FindNeighbors(obj, dims = 1:20)
+  obj <- FindClusters(obj, resolution = resolution)
+  obj <- RunUMAP(obj, dims = 1:20)
+  
+  # Run fgsea per subcluster
+  subcluster_fgsea <- list()
+  for (cl in levels(Idents(obj))) {
+    markers_cl <- tryCatch(
+      FindMarkers(obj, ident.1 = cl, min.pct = 0.1, logfc.threshold = 0),
+      error = function(e) NULL
+    )
+    if (is.null(markers_cl) || nrow(markers_cl) == 0) next
+    
+    gene_stats <- markers_cl$avg_log2FC
+    names(gene_stats) <- rownames(markers_cl)
+    gene_stats <- tapply(gene_stats, names(gene_stats), max)
+    ranks <- sort(gene_stats, decreasing = TRUE)
+    if (length(ranks) == 0) next
+    
+    fgseaRes_cl <- fgseaSimple(pathways = pathways, stats = ranks, nperm = 10000, nproc = 1)
+    subcluster_fgsea[[cl]] <- fgseaRes_cl
+  }
+  return(list(seurat_obj = obj, fgsea_res = subcluster_fgsea))
+}
+
+res_c5 <- run_fgsea_subclusters(c5, resolution = 1.0)
+
+res_mfs2_c5_macro<- run_fgsea_subclusters(mfs2_c5_macro, resolution = 1.0)
+library(data.table)
+
+fgsea_macro_tbl <- data.table::rbindlist(res_mfs2_c5_macro$fgsea_res, idcol = "cluster", fill = TRUE)
+
+# Preview
+head(fgsea_macro_tbl)
+
+
+
+
+
+
+
+
+
 
 
 
@@ -5190,6 +5293,7 @@ VlnPlot(mfs2_clean, features = c("PDGFRB", "COL1A2", "PDGFRA", "NOTCH3", "FAP", 
         pt.size = 0.1)
 
 
+
 library(Seurat)
 library(ggplot2)
 library(ggpubr)
@@ -5217,6 +5321,60 @@ VlnPlot(mfs2_clean, features = genes_to_plot,
                  "firebrick","darkorange","steelblue","forestgreen","purple","gold")) +
   ggtitle("Fibroblast markers and oncogenes across clusters (mfs2_clean)")
 
+# Add gene symbols from org.Hs.eg.db
+library(org.Hs.eg.db)
+symbols <- mapIds(org.Hs.eg.db,
+                  keys = rownames(mfs2_clean),
+                  column = "SYMBOL",
+                  keytype = "ENSEMBL",
+                  multiVals = "first")
+
+# Replace rownames with gene symbols
+rownames(mfs2_clean) <- ifelse(is.na(symbols), rownames(mfs2_clean), symbols)
+
+VlnPlot(mfs2_clean, features = "EGFR", group.by = "seurat_clusters")
+
+# Plot 4 genes in one panel
+library(patchwork)
+
+VlnPlot(
+  object = mfs2_clean,
+  features = c("PDGFRB", "COL1A2", "FAP", "NOTCH3", "EGFR"),
+  group.by = "seurat_clusters",
+  pt.size = 0.1
+) + plot_annotation(title = "mfs2_clean")
+
+
+
+library(Seurat)
+library(patchwork)
+
+# Individual plots
+p1 <- VlnPlot(mfs1_clean, features = "COL1A2", group.by = "seurat_clusters", pt.size = 0.1) +
+  theme(legend.position = "none", axis.title.x = element_blank())
+
+p2 <- VlnPlot(mfs1_clean, features = "PDGFRA", group.by = "seurat_clusters", pt.size = 0.1) +
+  theme(legend.position = "none", axis.title.x = element_blank())
+
+p3 <- VlnPlot(mfs1_clean, features = "FAP", group.by = "seurat_clusters", pt.size = 0.1) +
+  theme(legend.position = "none", axis.title.x = element_blank())
+
+p4 <- VlnPlot(mfs1_clean, features = "ACTA2", group.by = "seurat_clusters", pt.size = 0.1) +
+  theme(legend.position = "none", axis.title.x = element_blank())
+
+p5 <- VlnPlot(mfs1_clean, features = "MMP2.3", group.by = "seurat_clusters", pt.size = 0.1) +
+  theme(legend.position = "none", axis.title.x = element_blank())
+
+# Combine into a grid (2x3 layout)
+(p1 | p2 | p3) / (p4 | p5) + 
+  plot_annotation(title = "Fibroblast/Tumor marker expression across clusters (mfs1_clean)")
+
+grep("MMP2", rownames(mfs1_clean), value = TRUE)
+# Look at all MMP2-related rows
+grep("MMP2", rownames(mfs1_clean), value = TRUE)
+
+# Inspect average expression for each
+AverageExpression(mfs1_clean, features = grep("MMP2", rownames(mfs1_clean), value = TRUE))
 
 
 
@@ -5268,66 +5426,729 @@ summary1_df$Label <- paste0(summary1_df$SingleR.labels,
 
 library(ggplot2)
 
-ggplot(summary1_df, aes(x = reorder(SingleR.labels, -Cells), y = Cells, fill = SingleR.labels)) +
-  geom_bar(stat = "identity", color = "black") +
-  theme_minimal() +
-  ggtitle("mfs1_clean Cell Type Composition") +
-  xlab("Cell Type") +
-  ylab("Number of Cells") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "none") +
-  geom_text(aes(label = paste0(Cells, " (", Percent, "%)")),
-            vjust = -0.3, size = 3)
 
 
 summary2_df <- summary2 %>% ungroup() %>% as.data.frame()
-str(summary2_df)
-colnames(summary2_df)
+
 
 library(dplyr)
 library(ggplot2)
 
 # Collapse across clusters: sum counts and recompute percentages
+summary2_df <- summary2 %>% ungroup() %>% as.data.frame()
 summary2_total <- summary2_df %>%
   group_by(CellType) %>%
   summarise(Cells = sum(Cells), .groups = "drop") %>%
   mutate(Percent = round(Cells / sum(Cells) * 100, 2))
 
-# Plot histogram
+summary2_total <- summary2_df %>%
+  group_by(CellType) %>%
+  summarise(Cells = sum(Cells), .groups = "drop") %>%
+  mutate(Percent = round(Cells / sum(Cells) * 100, 2))
+
 ggplot(summary2_total, aes(x = reorder(CellType, -Cells), y = Cells, fill = CellType)) +
   geom_col(color = "black") +
-  theme_minimal() +
+  theme_minimal(base_size = 11) +
   ggtitle("mfs2_clean Cell Type Composition (Total)") +
   xlab("Cell Type") +
   ylab("Number of Cells") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "none") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8, face = "bold"),
+    axis.text.y = element_text(size = 8, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
+    legend.position = "none"
+  ) +
   geom_text(aes(label = paste0(Cells, " (", Percent, "%)")),
-            vjust = -0.3, size = 3)
+            vjust = -0.2, size = 2, color = "black")   # very small labels
+
+ggsave("mfs2_clean_composition.png", width = 8, height = 5, dpi = 300, bg = "white")
+
+# Collapse across clusters for mfs1_clean
+summary1_df <- summary1 %>% ungroup() %>% as.data.frame()
+
+summary1_total <- summary1_df %>%
+  group_by(CellType) %>%
+  summarise(Cells = sum(Cells), .groups = "drop") %>%
+  mutate(Percent = round(Cells / sum(Cells) * 100, 2))
+
+# Plot with reduced label size
+ggplot(summary1_total, aes(x = reorder(CellType, -Cells), y = Cells, fill = CellType)) +
+  geom_col(color = "black") +
+  theme_minimal(base_size = 11) +
+  ggtitle("mfs1_clean Cell Type Composition (Total)") +
+  xlab("Cell Type") +
+  ylab("Number of Cells") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8, face = "bold"),
+    axis.text.y = element_text(size = 8, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    axis.title.y = element_text(size = 11, face = "bold"),
+    plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
+    legend.position = "none"
+  ) +
+  geom_text(aes(label = paste0(Cells, " (", Percent, "%)")),
+            vjust = -0.2, size = 2, color = "black")   # very small labels
+
+ggsave("mfs1_clean_composition.png", width = 8, height = 5, dpi = 300, bg = "white")
+
+
+
+
+
+
+
+
+pathways <- gmtPathways("ReactomePathways.gmt")
+
+markers_mfs2 <- read.csv("markers_mfs2_new3.csv")
+markers_mfs1 <- read.csv("markers_mfs1_new2.csv")
+extract_top5 <- function(fgsea_res) {
+  if (is.null(fgsea_res) || nrow(fgsea_res) == 0) return(NULL)
+  top5 <- fgsea_res[order(-fgsea_res$NES), ][1:5, ]
+  nes <- setNames(top5$NES, top5$pathway)
+  return(nes)
+}
+
+nes_list <- list(
+  Group1 = extract_top5(fgsea_group1),
+  Group2 = extract_top5(fgsea_group2),
+  C8     = extract_top5(fgsea_c8),
+  C9     = extract_top5(fgsea_c9),
+  C12    = extract_top5(fgsea_c12),
+  C14    = extract_top5(fgsea_c14),
+  C7     = extract_top5(fgsea_c7),
+  C9_mfs2= extract_top5(fgsea_c9),
+  C10    = extract_top5(fgsea_c10)
+)
+
+nes_list
+
+run_fgsea_from_markers <- function(markers_cl, top_n = 1000, nperm = 10000, pathways) {
+  if (is.null(markers_cl) || nrow(markers_cl) == 0) return(NULL)
+  
+  # Rank genes by logFC, deduplicate
+  gene_stats <- markers_cl$avg_log2FC
+  names(gene_stats) <- markers_cl$gene
+  gene_stats <- tapply(gene_stats, names(gene_stats), max)
+  
+  # Keep top N genes
+  ranks <- sort(gene_stats, decreasing = TRUE)[1:min(top_n, length(gene_stats))]
+  
+  # Run fgsea (positive scoring if all values > 0)
+  fgseaRes <- fgseaSimple(pathways = pathways, stats = ranks,
+                          nperm = nperm, nproc = 4, scoreType = "pos")
+  
+  return(fgseaRes[order(-fgseaRes$NES), ][1:5, ])
+}
+
+# Load marker tables
+markers_mfs1 <- read.csv("markers_mfs1_new2.csv")
+
+# Split by cluster
+markers_group1 <- subset(markers_mfs1, cluster %in% c(1,6,7))
+markers_group2 <- subset(markers_mfs1, cluster %in% c(0,2,3,4,11))
+
+markers_c8  <- subset(markers_mfs1, cluster == 8)
+fgsea_c8  <- run_fgsea_from_markers(markers_c8,  top_n=1000, nperm=1000, pathways=pathways)
+
+markers_c9mfs1  <- subset(markers_mfs1, cluster == 9)
+fgsea_c9mfs1  <- run_fgsea_from_markers(markers_c9mfs1,  top_n=1000, nperm=1000, pathways=pathways)
+
+markers_c12  <- subset(markers_mfs1, cluster == 12)
+fgsea_c12  <- run_fgsea_from_markers(markers_c12,  top_n=1000, nperm=1000, pathways=pathways)
+
+markers_c14  <- subset(markers_mfs1, cluster == 14)
+fgsea_c14  <- run_fgsea_from_markers(markers_c14,  top_n=1000, nperm=1000, pathways=pathways)
+
+# Run fgsea directly
+fgsea_group1 <- run_fgsea_from_markers(markers_group1, top_n=1000, nperm=1000, pathways=pathways)
+fgsea_group2 <- run_fgsea_from_markers(markers_group2, top_n=1000, nperm=1000, pathways=pathways)
+markers_mfs2 <- read.csv("markers_mfs2_new3.csv")
+
+markers_c7  <- subset(markers_mfs2, cluster == 7)
+markers_c9  <- subset(markers_mfs2, cluster == 9)
+markers_c10 <- subset(markers_mfs2, cluster == 10)
+
+fgsea_c7  <- run_fgsea_from_markers(markers_c7,  top_n=1000, nperm=1000, pathways=pathways)
+fgsea_c9  <- run_fgsea_from_markers(markers_c9,  top_n=1000, nperm=1000, pathways=pathways)
+fgsea_c10 <- run_fgsea_from_markers(markers_c10, top_n=1000, nperm=1000, pathways=pathways)
+
+
+  library(pheatmap)
+
+
+plot_top5_genes_heatmap <- function(fgsea_res, cluster_name) {
+  if (is.null(fgsea_res) || nrow(fgsea_res) == 0) {
+    message("No fgsea results for ", cluster_name)
+    return(NULL)
+  }
+  
+  # Top 5 pathways
+  top5 <- fgsea_res[order(-fgsea_res$NES), ][1:min(5, nrow(fgsea_res)), ]
+  
+  # Collect top 5 genes per pathway
+  gene_list <- unique(unlist(lapply(top5$leadingEdge, function(g) g[1:min(5, length(g))])))
+  
+  # Build NES matrix: genes × pathways
+  nes_mat <- sapply(1:nrow(top5), function(i) {
+    genes <- top5$leadingEdge[[i]][1:min(5, length(top5$leadingEdge[[i]]))]
+    vals <- ifelse(gene_list %in% genes, top5$NES[i], 0)
+    return(vals)
+  }, simplify = FALSE)
+  
+  nes_mat <- do.call(cbind, nes_mat)
+  colnames(nes_mat) <- top5$pathway
+  rownames(nes_mat) <- gene_list
+  
+  # Decide clustering based on dimensions
+  cluster_rows <- if (nrow(nes_mat) > 1) TRUE else FALSE
+  cluster_cols <- if (ncol(nes_mat) > 1) TRUE else FALSE
+  
+  # Plot heatmap
+  pheatmap(nes_mat,
+           scale = "row",
+           cluster_rows = cluster_rows,
+           cluster_cols = cluster_cols,
+           main = paste("Top 5 Genes in Top Pathways -", cluster_name),
+           color = colorRampPalette(c("navy","white","firebrick"))(50),
+           filename = paste0(cluster_name, "_top5genes_heatmap.png"),
+           width = 8,   # wider plot
+           height = 10) # taller plot so rows aren’t compressed
+  
+}
+
+
+
+plot_top5_genes_heatmap(fgsea_group1, "Group1")
+plot_top5_genes_heatmap(fgsea_group2, "Group2")
+plot_top5_genes_heatmap(fgsea_c8, "C8")
+plot_top5_genes_heatmap(fgsea_c9mfs1, "C9")
+plot_top5_genes_heatmap(fgsea_c12, "C12")
+plot_top5_genes_heatmap(fgsea_c14, "C14")
+
+plot_top5_genes_heatmap(fgsea_c7, "C7")
+plot_top5_genes_heatmap(fgsea_c9, "C9_mfs2")
+plot_top5_genes_heatmap(fgsea_c10, "C10")
+
+
+
+
+
+# --- Load libraries ---
+library(fgsea)
+library(pheatmap)
+library(igraph)
+library(ggraph)
+library(ggplot2)
+
+# --- Load pathways ---
+pathways <- gmtPathways("ReactomePathways.gmt")
+
+# --- Helper function: run fgsea on marker table ---
+run_fgsea_from_markers <- function(markers_cl, top_n = 1000, nperm = 10000, pathways) {
+  if (is.null(markers_cl) || nrow(markers_cl) == 0) return(NULL)
+  
+  # Rank genes by logFC, deduplicate
+  gene_stats <- markers_cl$avg_log2FC
+  names(gene_stats) <- markers_cl$gene
+  gene_stats <- tapply(gene_stats, names(gene_stats), max)
+  
+  # Keep top N genes
+  ranks <- sort(gene_stats, decreasing = TRUE)[1:min(top_n, length(gene_stats))]
+  
+  # Run fgsea
+  fgseaRes <- fgseaSimple(pathways = pathways, stats = ranks,
+                          nperm = nperm, nproc = 4, scoreType = "pos")
+  
+  # Return top 20 pathways
+  return(fgseaRes[order(-fgseaRes$NES), ][1:min(20, nrow(fgseaRes)), ])
+}
+
+# --- Load marker tables ---
+markers_mfs1 <- read.csv("markers_mfs1_new2.csv")
+markers_mfs2 <- read.csv("markers_mfs2_new3.csv")
+
+# --- Split by cluster (examples) ---
+markers_group1 <- subset(markers_mfs1, cluster %in% c(1,6,7))
+markers_group2 <- subset(markers_mfs1, cluster %in% c(0,2,3,4,11))
+markers_c8     <- subset(markers_mfs1, cluster == 8)
+markers_c9mfs1 <- subset(markers_mfs1, cluster == 9)
+markers_c12    <- subset(markers_mfs1, cluster == 12)
+markers_c14    <- subset(markers_mfs1, cluster == 14)
+
+markers_c7     <- subset(markers_mfs2, cluster == 7)
+markers_c9     <- subset(markers_mfs2, cluster == 9)
+markers_c10    <- subset(markers_mfs2, cluster == 10)
+
+# --- Run fgsea for each cluster ---
+fgsea_group1 <- run_fgsea_from_markers(markers_group1, pathways=pathways)
+fgsea_group2 <- run_fgsea_from_markers(markers_group2, pathways=pathways)
+fgsea_c8     <- run_fgsea_from_markers(markers_c8, pathways=pathways)
+fgsea_c9mfs1 <- run_fgsea_from_markers(markers_c9mfs1, pathways=pathways)
+fgsea_c12    <- run_fgsea_from_markers(markers_c12, pathways=pathways)
+fgsea_c14    <- run_fgsea_from_markers(markers_c14, pathways=pathways)
+fgsea_c7     <- run_fgsea_from_markers(markers_c7, pathways=pathways)
+fgsea_c9     <- run_fgsea_from_markers(markers_c9, pathways=pathways)
+fgsea_c10    <- run_fgsea_from_markers(markers_c10, pathways=pathways)
+
+# --- Function: bar plot of top 20 pathways ---
+plot_top20_pathways_bar <- function(fgsea_res, cluster_name, outdir = ".") {
+  if (is.null(fgsea_res) || nrow(fgsea_res) == 0) {
+    message("No fgsea results for ", cluster_name)
+    return(NULL)
+  }
+  
+  top20 <- fgsea_res[order(-fgsea_res$NES), ][1:min(20, nrow(fgsea_res)), ]
+  
+  p <- ggplot(top20, aes(x = reorder(pathway, NES), y = NES, fill = NES)) +
+    geom_bar(stat = "identity") +
+    coord_flip() +
+    scale_fill_gradient(low = "lightblue", high = "firebrick") +
+    labs(title = paste("Top 20 Pathways -", cluster_name),
+         x = "Pathway", y = "NES") +
+    theme_minimal(base_size = 16) +
+    theme(
+      plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+      axis.title.x = element_text(size = 16, face = "bold"),
+      axis.title.y = element_text(size = 16, face = "bold"),
+      axis.text.x = element_text(size = 14, face = "bold"),
+      axis.text.y = element_text(size = 12, face = "bold", margin = margin(r = 12)),
+      legend.title = element_text(size = 14, face = "bold"),
+      legend.text = element_text(size = 12)
+    )
+  
+  outfile <- file.path(outdir, paste0(cluster_name, "_top20_pathways.png"))
+  ggsave(outfile, plot = p, width = 12, height = 10, dpi = 300, bg = "white")
+  message("Saved bar plot to ", outfile)
+}
+
+# --- Function: network plot of top 20 pathways ---
+plot_pathway_gene_network <- function(fgsea_res, cluster_name, outdir = ".") {
+  if (is.null(fgsea_res) || nrow(fgsea_res) == 0) return(NULL)
+  
+  top20 <- fgsea_res[order(-fgsea_res$NES), ][1:min(20, nrow(fgsea_res)), ]
+  
+  edges <- do.call(rbind, lapply(1:nrow(top20), function(i) {
+    data.frame(
+      pathway = top20$pathway[i],
+      gene = top20$leadingEdge[[i]],
+      NES = top20$NES[i]
+    )
+  }))
+  
+  g <- igraph::graph_from_data_frame(edges, directed = FALSE)
+  
+  p <- ggraph(g, layout = "fr") +
+    geom_edge_link(alpha = 0.3) +
+    geom_node_point(aes(color = ifelse(name %in% top20$pathway, "Pathway", "Gene"),
+                        size = ifelse(name %in% top20$pathway, 10, 4))) +
+    geom_node_text(aes(label = name),
+                   repel = TRUE, size = 5, fontface = "bold") +   # larger, bold labels
+    scale_color_manual(values = c("Pathway" = "firebrick", "Gene" = "navy")) +
+    theme_void() +
+    theme(
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.title = element_text(size = 20, face = "bold", hjust = 0.5)
+    ) +
+    ggtitle(paste("Pathway–Gene Network (Top 20):", cluster_name))
+  
+  outfile <- file.path(outdir, paste0(cluster_name, "_network.png"))
+  ggsave(outfile, plot = p, width = 12, height = 10, dpi = 300, bg = "white")
+  message("Saved network plot to ", outfile)
+}
+
+# --- Example usage ---
+plot_top20_pathways_bar(fgsea_group1, "Group1")
+plot_top20_pathways_bar(fgsea_group2, "Group2")
+plot_top20_pathways_bar(fgsea_c9, "C9_mfs2")
+
+summary(fgsea_group1$NES)
+
+# --- Bar plots (Top 20 pathways per cluster) ---
+plot_top20_pathways_bar(fgsea_group1, "Group1")
+plot_top20_pathways_bar(fgsea_group2, "Group2")
+plot_top20_pathways_bar(fgsea_c8, "C8")
+plot_top20_pathways_bar(fgsea_c9mfs1, "C9_mfs1")
+plot_top20_pathways_bar(fgsea_c12, "C12")
+plot_top20_pathways_bar(fgsea_c14, "C14")
+plot_top20_pathways_bar(fgsea_c7, "C7")
+plot_top20_pathways_bar(fgsea_c9, "C9_mfs2")
+plot_top20_pathways_bar(fgsea_c10, "C10")
+
+# --- Network plots (Top 20 pathways per cluster) ---
+plot_pathway_gene_network(fgsea_group1, "Group1")
+plot_pathway_gene_network(fgsea_group2, "Group2")
+plot_pathway_gene_network(fgsea_c8, "C8")
+plot_pathway_gene_network(fgsea_c9mfs1, "C9_mfs1")
+plot_pathway_gene_network(fgsea_c12, "C12")
+plot_pathway_gene_network(fgsea_c14, "C14")
+plot_pathway_gene_network(fgsea_c7, "C7")
+plot_pathway_gene_network(fgsea_c9, "C9_mfs2")
+plot_pathway_gene_network(fgsea_c10, "C10")
+
+
+
+library(dplyr)
+markers <- read.csv("markers_mfs1_new2.csv")
+str(markers)
+
+clusters_of_interest <- c(0, 2, 3, 4, 11)
+
+markers_filtered <- markers %>%
+  filter(cluster %in% clusters_of_interest)
+
+high_expr <- markers_filtered %>%
+  filter(avg_log2FC > 1, p_val_adj < 0.05)
+
+overlap_genes <- high_expr %>%
+  group_by(gene) %>%
+  summarise(clusters = paste(unique(cluster), collapse = ","), n_clusters = n()) %>%
+  filter(n_clusters > 1)   # genes appearing in >1 cluster
+head(overlap_genes)
+
+
+
+
+library(dplyr)
+library(ggplot2)
+
+# Load the file
+markers_mfs2 <- read.csv("markers_mfs2_new3.csv")
+
+# Filter rows: CCND1, MYC, ADAMTS, WNT, and SFRP families
+filtered_genes <- markers_mfs2 %>%
+  filter(grepl("^CCND1", gene, ignore.case = TRUE) |
+           grepl("^MYC", gene, ignore.case = TRUE) |
+           grepl("ADAMTS", gene, ignore.case = TRUE) |
+           grepl("WNT", gene, ignore.case = TRUE) |
+           grepl("SFRP", gene, ignore.case = TRUE) |   # new condition
+           grepl("ADAMTS", gene_function, ignore.case = TRUE) |
+           grepl("WNT", gene_function, ignore.case = TRUE))
+
+# Replace p_val_adj = 0 with tiny value for plotting
+filtered_genes <- filtered_genes %>%
+  mutate(p_val_adj = ifelse(p_val_adj == 0, 1e-300, p_val_adj))
+
+# Dot plot: clusters vs genes
+ggplot(filtered_genes, aes(x = factor(cluster), y = gene)) +
+  geom_point(aes(size = pct.1, 
+                 color = avg_log2FC, 
+                 alpha = -log10(p_val_adj))) +
+  scale_color_gradient(low = "blue", high = "red") +
+  scale_alpha_continuous(range = c(0.4, 1)) +
+  theme_minimal() +
+  labs(x = "Cluster", y = "Gene",
+       title = "ADAMTS/WNT/SFRP/CCND1/MYC gene expression across clusters",
+       color = "avg_log2FC", size = "pct.1", alpha = "-log10(p_val_adj)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+unique(markers_mfs2$gene[grepl("WNT", markers_mfs2$gene, ignore.case = TRUE)])
+subset(filtered_genes, gene %in% c("WNT2", "WNT6"))
+
+
+
+
+
+
+
+
+library(dplyr)
+library(ggplot2)
+
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(data.table)
+
+# --- Step 1: Flatten fgsea results safely ---
+fgsea_c2_tbl <- data.table::rbindlist(res_c2_nk$fgsea_res, fill = TRUE)
+fgsea_c4_tbl <- data.table::rbindlist(res_c4_nk$fgsea_res, fill = TRUE)
+
+# --- Step 2: Convert to data.frame and clean ---
+fgsea_c2_clean <- as.data.frame(fgsea_c2_tbl) %>%
+  dplyr::select(pathway, NES, padj) %>%
+  dplyr::rename(NES_C2 = NES, padj_C2 = padj)
+
+fgsea_c4_clean <- as.data.frame(fgsea_c4_tbl) %>%
+  dplyr::select(pathway, NES, padj) %>%
+  dplyr::rename(NES_C4 = NES, padj_C4 = padj)
+
+# --- Step 3: Join by pathway ---
+fgsea_compare <- dplyr::inner_join(fgsea_c2_clean, fgsea_c4_clean, by = "pathway")
+
+
+library(VennDiagram)
+
+sig_c2 <- fgsea_c2_clean %>% filter(padj_C2 < 0.05) %>% pull(pathway)
+sig_c4 <- fgsea_c4_clean %>% filter(padj_C4 < 0.05) %>% pull(pathway)
+
+venn.plot <- venn.diagram(
+  x = list(C2 = sig_c2, C4 = sig_c4),
+  filename = "fgsea_overlap_venn.png",
+  fill = c("skyblue", "orange"),
+  alpha = 0.5,
+  cex = 1.5,
+  cat.cex = 1.5,
+  main = "Overlap of Significant Pathways"
+)
+
+# --- Step 4: Add NES difference for labeling top divergent pathways ---
+fgsea_compare <- fgsea_compare %>%
+  dplyr::mutate(NES_diff = NES_C2 - NES_C4)
+
+top_divergent <- fgsea_compare %>%
+  dplyr::arrange(desc(abs(NES_diff))) %>%
+  dplyr::slice(1:10)
+
+# --- Step 5: Save scatter plot as PNG ---
+png("fgsea_scatter_C2_vs_C4.png", width = 1200, height = 1000, res = 150)
+
+ggplot(fgsea_compare, aes(x = NES_C2, y = NES_C4)) +
+  geom_point(aes(color = padj_C2 < 0.05 | padj_C4 < 0.05)) +
+  geom_text_repel(data = top_divergent,
+                  aes(label = pathway),
+                  size = 3, max.overlaps = 20) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  theme_minimal() +
+  labs(title = "Comparative fgsea: C2 vs C4 NK subclusters",
+       x = "NES (C2 NK)",
+       y = "NES (C4 NK)",
+       color = "Significant (padj < 0.05)") +
+  scale_color_manual(values = c("FALSE" = "gray70", "TRUE" = "red"))
+
+dev.off()
+
+install.packages("VennDiagram")
+library(dplyr)
+library(VennDiagram)
+
+# --- Step 1: Define significant pathways ---
+sig_c2 <- fgsea_c2_clean %>%
+  filter(padj_C2 < 0.05) %>%
+  pull(pathway)
+
+sig_c4 <- fgsea_c4_clean %>%
+  filter(padj_C4 < 0.05) %>%
+  pull(pathway)
+
+# --- Step 2: Save Venn diagram as PNG ---
+png("fgsea_overlap_venn.png", width = 1200, height = 1000, res = 150)
+
+venn.diagram(
+  x = list(C2 = sig_c2, C4 = sig_c4),
+  filename = NULL,              # NULL ensures it plots to current device (png)
+  fill = c("skyblue", "orange"),
+  alpha = 0.5,
+  cex = 1.5,
+  cat.cex = 1.5,
+  cat.pos = c(-20, 20),
+  main = "Overlap of Significant Pathways"
+)
+
+dev.off()
+
+
+
+
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+
+# --- Load marker tables ---
+markers_mfs1 <- read.csv("markers_mfs1_new2.csv")
+markers_mfs2 <- read.csv("markers_mfs2_new3.csv")
+
+# --- Genes of interest ---
+genes_of_interest <- c("TGFBI", "IL10RA", "MERTK")
+
+# --- Filtering function (explicit + prefix matches) ---
+filter_genes <- function(df) {
+  df %>%
+    filter(
+      gene %in% genes_of_interest |
+        grepl("^IL10", gene) |
+        grepl("^IL12", gene) |
+        grepl("^IL4", gene) |
+        grepl("^TGFB", gene) |
+        grepl("^TLR2$", gene) |
+        grepl("^TLR4$", gene) |
+        grepl("^IFNG", gene) |
+        grepl("^IL10", gene_function) |
+        grepl("^IL12", gene_function) |
+        grepl("^IL4", gene_function) |
+        grepl("^TGFB", gene_function) |
+        grepl("^TLR2", gene_function) |
+        grepl("^TLR4", gene_function) |
+        grepl("^IFNG", gene_function)
+    ) %>%
+    mutate(p_val_adj = ifelse(p_val_adj == 0, 1e-300, p_val_adj))
+}
+
+# --- Apply filter to both datasets ---
+filtered_mfs1 <- filter_genes(markers_mfs1)
+filtered_mfs2 <- filter_genes(markers_mfs2)
+
+# --- Dot plot for mfs1 ---
+p1 <- ggplot(filtered_mfs1, aes(x = factor(cluster), y = gene)) +
+  geom_point(aes(size = pct.1, color = avg_log2FC, alpha = -log10(p_val_adj))) +
+  scale_color_gradient(low = "blue", high = "red") +
+  scale_alpha_continuous(range = c(0.4, 1)) +
+  theme_minimal() +
+  labs(title = "Selected markers (mfs1_clean)",
+       x = "Cluster", y = "Gene",
+       color = "avg_log2FC", size = "pct.1", alpha = "-log10(p_val_adj)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("dotplot_mfs1_selected.png", plot = p1, width = 10, height = 7, dpi = 300)
+
+# --- Dot plot for mfs2 ---
+p2 <- ggplot(filtered_mfs2, aes(x = factor(cluster), y = gene)) +
+  geom_point(aes(size = pct.1, color = avg_log2FC, alpha = -log10(p_val_adj))) +
+  scale_color_gradient(low = "blue", high = "red") +
+  scale_alpha_continuous(range = c(0.4, 1)) +
+  theme_minimal() +
+  labs(title = "Selected markers (mfs2_clean)",
+       x = "Cluster", y = "Gene",
+       color = "avg_log2FC", size = "pct.1", alpha = "-log10(p_val_adj)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("dotplot_mfs2_selected.png", plot = p2, width = 10, height = 7, dpi = 300)
+
+
+
+# Load annotation package
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+
+# Step 1: Extract Ensembl IDs
+ensembl_ids <- rownames(mfs2_c5_macro)
+
+# Step 2: Map Ensembl IDs to gene symbols
+gene_symbols <- mapIds(org.Hs.eg.db,
+                       keys = ensembl_ids,
+                       column = "SYMBOL",
+                       keytype = "ENSEMBL",
+                       multiVals = "first")
+
+# Step 3: Replace rownames with gene symbols
+rownames(mfs2_c5_macro) <- gene_symbols
+
+# Step 4: Remove rows with NA gene symbols
+valid_genes <- !is.na(rownames(mfs2_c5_macro))
+mfs2_c5_macro <- mfs2_c5_macro[valid_genes, ]
+
+# Step 5: Load Seurat and helper packages
+library(Seurat)
+library(pheatmap)
+library(grid)
+library(dplyr)
+library(ggplot2)
+
+# Step 6: Function to count cells expressing given genes
+count_gene_expression <- function(seurat_obj, genes) {
+  expr_data <- FetchData(seurat_obj, vars = genes)
+  counts <- sapply(genes, function(g) sum(expr_data[[g]] > 0))
+  counts["Total"] <- sum(rowSums(expr_data > 0) > 0)
+  return(counts)
+} 
+
+# Step 7: Run for c5
+counts_c5 <- count_gene_expression(c5, c("TGFBI", "MERTK"))
+print(counts_c5)
+
+# Step 8: Run for mfs2_c5_macro (now with gene symbols)
+counts_mfs2 <- count_gene_expression(mfs2_c5_macro, c("TGFBI", "MERTK"))
+print(counts_mfs2)
+
+
+
+
+
 
 
 
 library(Seurat)
-library(ggplot2)
+library(fgsea)
 library(dplyr)
+library(pheatmap)
 
-# 1. Plot colored by SingleR cell type
-p <- DimPlot(mfs2_clean, group.by = "SingleR.labels", label = FALSE) +
-  theme(legend.position = "right")
+# ---- Function: select pathway genes ----
+select_pathway_genes <- function(fgsea_res_list, top_n = 20, select_n = 5, genes_per_pathway = 4) {
+  all_res <- do.call(rbind, fgsea_res_list)
+  if (is.null(all_res) || nrow(all_res) == 0) return(NULL)
+  
+  top_res <- all_res %>% arrange(padj) %>% head(top_n)
+  selected_pathways <- head(top_res$pathway, select_n)
+  
+  pathway_genes <- list()
+  for (pw in selected_pathways) {
+    leading_genes <- top_res$leadingEdge[top_res$pathway == pw][[1]]
+    pathway_genes[[pw]] <- head(leading_genes, genes_per_pathway)
+  }
+  return(pathway_genes)
+}
 
-# 2. Extract UMAP coordinates and cluster IDs
-umap_data <- Embeddings(mfs2_clean, "umap")
-cluster_ids <- mfs2_clean$seurat_clusters
+# ---- Function: plot heatmap (force LAG3) ----
+plot_celltype_heatmap <- function(seurat_obj, marker_genes, pathway_genes, filename, title) {
+  genes_to_plot <- unique(c(marker_genes, unlist(pathway_genes)))
+  genes_present <- intersect(genes_to_plot, rownames(seurat_obj))
+  
+  avg_expr <- AverageExpression(seurat_obj, features = genes_present,
+                                assays = "RNA", slot = "data")$RNA
+  avg_expr <- avg_expr[rowSums(avg_expr, na.rm = TRUE) > 0, , drop = FALSE]
+  
+  # Limit to top 40 variable genes, but always keep LAG3
+  gene_var <- apply(avg_expr, 1, var)
+  top_genes <- names(sort(gene_var, decreasing = TRUE))[1:min(40, length(gene_var))]
+  top_genes <- unique(c(top_genes, "LAG3"))   # <-- force LAG3
+  avg_expr <- avg_expr[top_genes, , drop = FALSE]
+  
+  # Row annotation
+  pathway_annotation <- data.frame(Category = rep("Marker", nrow(avg_expr)),
+                                   row.names = rownames(avg_expr))
+  for (pw in names(pathway_genes)) {
+    pathway_annotation$Category[rownames(avg_expr) %in% pathway_genes[[pw]]] <- pw
+  }
+  
+  annotation_col <- data.frame(Cluster = colnames(avg_expr),
+                               row.names = colnames(avg_expr))
+  
+  # Save PNG
+  png(filename, width = 2000, height = 2200, res = 200)
+  pheatmap(avg_expr,
+           scale = "row",
+           show_rownames = TRUE,
+           show_colnames = TRUE,
+           annotation_row = pathway_annotation,
+           annotation_col = annotation_col,
+           main = title,
+           fontsize_row = 10,
+           fontsize_col = 12,
+           angle_col = 45,
+           color = colorRampPalette(c("navy","white","firebrick"))(50))
+  dev.off()
+}
 
-# 3. Compute cluster centers
-centers <- aggregate(umap_data, by = list(cluster = cluster_ids), FUN = mean)
-colnames(centers)[2:3] <- c("UMAP_1", "UMAP_2")
+# ---- Example usage ----
+# 1. Generate pathway genes from fgsea results
+fgsea_cd8 <- res_c0_cd8$fgsea_res
+pathway_genes_cd8 <- select_pathway_genes(fgsea_cd8,
+                                          top_n = 20,
+                                          select_n = 5,
+                                          genes_per_pathway = 4)
 
-# 4. Overlay cluster numbers at centers
-p <- p + geom_text(data = centers,
-                   aes(x = UMAP_1, y = UMAP_2, label = cluster),
-                   size = 6, fontface = "bold", color = "black")
+# 2. Plot heatmap with CD8 markers + pathway genes
+plot_celltype_heatmap(res_c0_cd8$seurat_obj,
+                      cd8_markers,
+                      pathway_genes_cd8,
+                      "CD8_heatmap.png",
+                      "Top Pathways + CD8 Markers")
 
-# 5. Display
-p
 
+cd8_markers <- c("CD8A","CD3D","CD3E","CD3G","GZMK","GZMA","GZMM","GZMH",
+                 "NKG7","CCL5","CST7","CTSW","CXCR4","CD69","CRTAM","RUNX3",
+                 "LAG3","CXCR3","IL7R","CD2","CD44","CD48","CD52","TRAC",
+                 "TRBC1","TRBC2","PTPRC","HCST")
